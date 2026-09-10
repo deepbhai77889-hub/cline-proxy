@@ -56,6 +56,7 @@ impl GlobalLogBuffer {
         self.items.read().map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         if let Ok(mut lock) = self.items.write() {
             lock.clear();

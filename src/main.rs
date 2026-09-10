@@ -1,22 +1,27 @@
 mod key_manager;
 mod logger;
 mod server;
+#[cfg(target_os = "windows")]
 mod ui;
 
 use key_manager::KeyManager;
 use server::{create_router, AppState};
 use std::net::SocketAddr;
+#[cfg(target_os = "windows")]
 use ui::ProxyApp;
 
 const LISTEN: &str = "127.0.0.1:9090";
 
-fn main() -> eframe::Result<()> {
+#[cfg(target_os = "windows")]
+type MainResult = eframe::Result<()>;
+#[cfg(not(target_os = "windows"))]
+type MainResult = Result<(), Box<dyn std::error::Error>>;
+
+fn main() -> MainResult {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let is_headless = args.iter().any(|a| a == "--headless" || a == "-h");
 
     // Initialize key manager
     let key_manager = KeyManager::new();
@@ -55,17 +60,13 @@ fn main() -> eframe::Result<()> {
             }
         }
     });
-    // If headless mode requested or no graphical display found on Linux, run CLI loop
-    let has_display = cfg!(target_os = "windows")
-        || std::env::var("DISPLAY").is_ok()
-        || std::env::var("WAYLAND_DISPLAY").is_ok();
-
-    if is_headless || !has_display {
+    #[cfg(not(target_os = "windows"))]
+    {
         println!("============================================================");
-        println!("⚡ Cline Proxy Engine running in Headless / Server Mode");
+        println!("⚡ Cline Proxy Engine — CLI Mode (Linux)");
         println!("  Listen: http://{LISTEN}");
-        println!("  Web Dashboard: http://{LISTEN}/dashboard");
         println!("  Auth: Authorization: Bearer public");
+        println!("  Web Dashboard: http://{LISTEN}/dashboard");
         println!("  Press Ctrl+C to stop.");
         println!("============================================================");
 
@@ -74,22 +75,24 @@ fn main() -> eframe::Result<()> {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
             }
         });
-        return Ok(());
+        Ok(())
     }
 
-    // Windows Native GUI Options
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([880.0, 620.0])
-            .with_min_inner_size([650.0, 450.0])
-            .with_title("⚡ Cline Proxy Engine — Windows"),
-        ..Default::default()
-    };
+    #[cfg(target_os = "windows")]
+    {
+        let native_options = eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_inner_size([880.0, 620.0])
+                .with_min_inner_size([650.0, 450.0])
+                .with_title("⚡ Cline Proxy Engine — Windows"),
+            ..Default::default()
+        };
 
-    let app_handle = handle.clone();
-    eframe::run_native(
-        "Cline Proxy Engine",
-        native_options,
-        Box::new(move |_cc| Ok(Box::new(ProxyApp::new(key_manager, app_handle)))),
-    )
+        let app_handle = handle.clone();
+        eframe::run_native(
+            "Cline Proxy Engine",
+            native_options,
+            Box::new(move |_cc| Ok(Box::new(ProxyApp::new(key_manager, app_handle)))),
+        )
+    }
 }

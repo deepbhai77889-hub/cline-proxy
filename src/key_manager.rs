@@ -119,6 +119,7 @@ impl KeyManager {
         self.save_to_disk();
     }
 
+    #[allow(dead_code)]
     pub async fn toggle_key(&self, id: &str) {
         {
             let mut keys = self.keys.write().await;
