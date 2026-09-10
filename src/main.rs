@@ -24,23 +24,37 @@ fn main() -> eframe::Result<()> {
         key_manager: key_manager.clone(),
     };
 
-    // Spawn Tokio server on a background thread so GUI never blocks
+    // Initialize multi-thread Tokio runtime on the main thread
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+
+    // Enter Tokio runtime context so ambient reactor is always present
+    let handle = rt.handle().clone();
+    let _guard = handle.enter();
+
+    // Spawn Axum server using runtime handle
     let server_state = state.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime");
-
-        rt.block_on(async move {
-            let app = create_router(server_state);
-            let addr: SocketAddr = LISTEN.parse().unwrap();
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            logger::LOGGER.push("ℹ️", format!("Engine server live on http://{LISTEN} (Auth: Bearer public)"));
-            axum::serve(listener, app).await.unwrap();
-        });
+    handle.spawn(async move {
+        let app = create_router(server_state);
+        let addr: SocketAddr = match LISTEN.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                logger::LOGGER.push("🔴", format!("Invalid listen address: {e}"));
+                return;
+            }
+        };
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                logger::LOGGER.push("ℹ️", format!("Engine server live on http://{LISTEN} (Auth: Bearer public)"));
+                let _ = axum::serve(listener, app).await;
+            }
+            Err(e) => {
+                logger::LOGGER.push("🔴", format!("Failed to bind port 9090: {e}"));
+            }
+        }
     });
-
     // If headless mode requested or no graphical display found on Linux, run CLI loop
     let has_display = cfg!(target_os = "windows")
         || std::env::var("DISPLAY").is_ok()
@@ -55,10 +69,12 @@ fn main() -> eframe::Result<()> {
         println!("  Press Ctrl+C to stop.");
         println!("============================================================");
 
-        // Keep main thread alive
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
+        rt.block_on(async {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            }
+        });
+        return Ok(());
     }
 
     // Windows Native GUI Options
@@ -70,9 +86,10 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
+    let app_handle = handle.clone();
     eframe::run_native(
         "Cline Proxy Engine",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(ProxyApp::new(key_manager)))),
+        Box::new(move |_cc| Ok(Box::new(ProxyApp::new(key_manager, app_handle)))),
     )
 }

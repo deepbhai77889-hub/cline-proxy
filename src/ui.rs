@@ -11,6 +11,7 @@ enum Tab {
 
 pub struct ProxyApp {
     key_manager: KeyManager,
+    rt_handle: tokio::runtime::Handle,
     current_tab: Tab,
 
     // Add Key state
@@ -28,12 +29,12 @@ pub struct ProxyApp {
 }
 
 impl ProxyApp {
-    pub fn new(key_manager: KeyManager) -> Self {
+    pub fn new(key_manager: KeyManager, rt_handle: tokio::runtime::Handle) -> Self {
         let (test_tx, mut internal_rx) = mpsc::unbounded_channel::<(String, String)>();
         let (result_tx, test_rx) = mpsc::unbounded_channel::<(bool, String)>();
 
         // Background worker for testing keys
-        tokio::spawn(async move {
+        rt_handle.spawn(async move {
             while let Some((name, key)) = internal_rx.recv().await {
                 match test_key_connection(&key).await {
                     Ok(msg) => {
@@ -48,6 +49,7 @@ impl ProxyApp {
 
         Self {
             key_manager,
+            rt_handle,
             current_tab: Tab::Accounts,
             show_add_modal: false,
             new_key_name: String::new(),
@@ -210,13 +212,13 @@ impl ProxyApp {
 
                     if let Some(id) = to_delete {
                         let km = self.key_manager.clone();
-                        tokio::spawn(async move {
+                        self.rt_handle.spawn(async move {
                             km.remove_key(&id).await;
                         });
                     }
                     if let Some(id) = to_toggle {
                         let km = self.key_manager.clone();
-                        tokio::spawn(async move {
+                        self.rt_handle.spawn(async move {
                             km.toggle_key(&id).await;
                         });
                     }
@@ -324,7 +326,7 @@ impl ProxyApp {
 
                         let n_save = name.clone();
                         let k_save = key.clone();
-                        tokio::spawn(async move {
+                        self.rt_handle.spawn(async move {
                             if test_key_connection(&k_save).await.is_ok() {
                                 let _ = km.add_key(n_save, k_save).await;
                             }

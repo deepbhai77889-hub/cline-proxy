@@ -5,6 +5,10 @@ on:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-C link-arg=/DEBUG:NONE"
 
 jobs:
   build-windows:
