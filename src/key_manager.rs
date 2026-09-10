@@ -14,6 +14,8 @@ pub struct ApiKeyEntry {
     pub total_calls: u64,
     pub failed_calls: u64,
     pub last_status: Option<String>,
+    #[serde(default)]
+    pub cooldown_until: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -48,22 +50,8 @@ impl KeyManager {
                 total_calls: 0,
                 failed_calls: 0,
                 last_status: Some("Active".to_string()),
+                cooldown_until: None,
             });
-
-            // Also check providers.json for OAuth token
-            if let Some(oauth_key) = load_oauth_from_cline() {
-                if !oauth_key.is_empty() {
-                    initial_keys.push(ApiKeyEntry {
-                        id: "key-oauth".to_string(),
-                        name: "Cline OAuth Account".to_string(),
-                        key: oauth_key,
-                        enabled: true,
-                        total_calls: 0,
-                        failed_calls: 0,
-                        last_status: Some("Active".to_string()),
-                    });
-                }
-            }
         }
 
         let km = Self {
@@ -101,6 +89,7 @@ impl KeyManager {
             total_calls: 0,
             failed_calls: 0,
             last_status: Some("Verified OK".to_string()),
+            cooldown_until: None,
         };
 
         {
@@ -130,15 +119,36 @@ impl KeyManager {
         self.save_to_disk();
     }
 
-    // Get active keys for round-robin rotation
+    // Get active keys for round-robin rotation, skipping keys in cooldown
     pub async fn get_round_robin_candidates(&self) -> Vec<ApiKeyEntry> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
         let keys = self.keys.read().await;
-        let active: Vec<ApiKeyEntry> = keys.iter().filter(|k| k.enabled).cloned().collect();
+        let active: Vec<ApiKeyEntry> = keys
+            .iter()
+            .filter(|k| {
+                if !k.enabled {
+                    return false;
+                }
+                if let Some(until) = k.cooldown_until {
+                    if now < until {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+
         if active.is_empty() {
-            return Vec::new();
+            let any_enabled: Vec<ApiKeyEntry> = keys.iter().filter(|k| k.enabled).cloned().collect();
+            return any_enabled;
         }
+
         let start = self.index.fetch_add(1, Ordering::Relaxed) % active.len();
-        // Return rotated list starting from `start`
         let mut rotated = Vec::with_capacity(active.len());
         for i in 0..active.len() {
             rotated.push(active[(start + i) % active.len()].clone());
@@ -154,13 +164,30 @@ impl KeyManager {
         }
     }
 
-    pub async fn record_failure(&self, id: &str, reason: &str) {
+    pub async fn record_failure(&self, id: &str, status_code: u16, reason: &str) {
         let mut keys = self.keys.write().await;
         if let Some(k) = keys.iter_mut().find(|k| k.id == id) {
             k.total_calls += 1;
             k.failed_calls += 1;
-            k.last_status = Some(format!("Error: {reason}"));
+
+            // Auto-deactivate invalid/revoked keys so they NEVER cause repeated failover spam!
+            if status_code == 401 || status_code == 403 {
+                k.enabled = false;
+                k.last_status = Some(format!("Deactivated (HTTP {status_code} Invalid Key)"));
+                tracing::warn!("Auto-deactivated invalid key '{}' (id: {})", k.name, k.id);
+            } else if status_code == 429 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                k.cooldown_until = Some(now + 60);
+                k.last_status = Some("Rate-limited (cooldown 60s)".to_string());
+            } else {
+                k.last_status = Some(format!("Error: {reason}"));
+            }
         }
+        drop(keys);
+        self.save_to_disk();
     }
 }
 
@@ -220,21 +247,3 @@ fn get_keys_file_path() -> PathBuf {
         .join("keys.json")
 }
 
-fn load_oauth_from_cline() -> Option<String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    let prov_path = PathBuf::from(home)
-        .join(".cline")
-        .join("data")
-        .join("settings")
-        .join("providers.json");
-    if let Ok(data) = std::fs::read_to_string(prov_path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-            return v.pointer("/providers/cline/settings/auth/accessToken")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string());
-        }
-    }
-    None
-}

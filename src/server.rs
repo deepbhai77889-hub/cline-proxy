@@ -227,11 +227,13 @@ async fn chat_completions_handler(State(state): State<AppState>, req: Request) -
 
     let mut last_error_response: Option<Response> = None;
 
+    if let Some(first) = candidates.first() {
+        log_proxy_info("CLINE", &model_name, "Public", &first.name);
+    }
+    log_request_start(color_icon, "v1/chat/completions", &model_name, is_stream_req, msg_count, "Public");
+
     // Round-Robin execution loop with Auto-Failover
     for (i, candidate) in candidates.iter().enumerate() {
-        log_proxy_info("CLINE", &model_name, "Public", &candidate.name);
-        log_request_start(color_icon, "v1/chat/completions", &model_name, is_stream_req, msg_count, "Public");
-
         let auth_val = if candidate.key.starts_with("Bearer ") {
             candidate.key.clone()
         } else {
@@ -264,7 +266,7 @@ async fn chat_completions_handler(State(state): State<AppState>, req: Request) -
                 // Failover on rate-limit (429), auth error (401), or server error (500/502/503)
                 if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN || status.is_server_error() {
                     let err_text = upstream.text().await.unwrap_or_default();
-                    state.key_manager.record_failure(&candidate.id, &format!("{status}")).await;
+                    state.key_manager.record_failure(&candidate.id, status.as_u16(), &err_text).await;
 
                     if i + 1 < candidates.len() {
                         let next_candidate = &candidates[i + 1];
@@ -302,7 +304,7 @@ async fn chat_completions_handler(State(state): State<AppState>, req: Request) -
                 });
             }
             Err(e) => {
-                state.key_manager.record_failure(&candidate.id, "Network error").await;
+                state.key_manager.record_failure(&candidate.id, 502, "Network error").await;
                 if i + 1 < candidates.len() {
                     let next_candidate = &candidates[i + 1];
                     log_failover(&candidate.name, &next_candidate.name, &format!("Network: {e}"));
@@ -461,11 +463,12 @@ async fn anthropic_handler(State(state): State<AppState>, req: Request) -> Respo
     if !oai_tools.is_empty() {
         oai_body["tools"] = Value::Array(oai_tools);
     }
+    if let Some(first) = candidates.first() {
+        log_proxy_info("CLINE", model, "Public", &first.name);
+    }
+    log_request_start(color_icon, "v1/messages", model, false, 1, "Public");
 
     for (i, candidate) in candidates.iter().enumerate() {
-        log_proxy_info("CLINE", model, "Public", &candidate.name);
-        log_request_start(color_icon, "v1/messages", model, false, 1, "Public");
-
         let auth_val = if candidate.key.starts_with("Bearer ") {
             candidate.key.clone()
         } else {
@@ -491,7 +494,7 @@ async fn anthropic_handler(State(state): State<AppState>, req: Request) -> Respo
             Ok(resp) => {
                 let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
                 if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN || status.is_server_error() {
-                    state.key_manager.record_failure(&candidate.id, &format!("{status}")).await;
+                    state.key_manager.record_failure(&candidate.id, status.as_u16(), &format!("{status}")).await;
                     if i + 1 < candidates.len() {
                         let next = &candidates[i + 1];
                         log_failover(&candidate.name, &next.name, &format!("{status}"));
@@ -551,7 +554,7 @@ async fn anthropic_handler(State(state): State<AppState>, req: Request) -> Respo
                 return (StatusCode::OK, [("content-type", "application/json")], axum::Json(anth_out)).into_response();
             }
             Err(e) => {
-                state.key_manager.record_failure(&candidate.id, "network error").await;
+                state.key_manager.record_failure(&candidate.id, 502, "network error").await;
                 if i + 1 < candidates.len() {
                     let next = &candidates[i + 1];
                     log_failover(&candidate.name, &next.name, &format!("Network: {e}"));
