@@ -1,0 +1,48 @@
+name: Build Windows Executable (.exe)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build cline-proxy.exe (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Release Binary (.exe)
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Verify Executable
+        shell: pwsh
+        run: |
+          $exePath = "target/x86_64-pc-windows-msvc/release/cline-proxy.exe"
+          if (Test-Path $exePath) {
+            $size = (Get-Item $exePath).Length / 1MB
+            Write-Host "Successfully built $exePath ($([math]::Round($size, 2)) MB)"
+          } else {
+            Write-Error "Executable not found at $exePath"
+            exit 1
+          }
+
+      - name: Upload cline-proxy.exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cline-proxy-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/cline-proxy.exe
+          if-no-files-found: error
